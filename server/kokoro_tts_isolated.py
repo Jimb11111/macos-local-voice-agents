@@ -75,13 +75,21 @@ class KokoroTTSIsolated(TTSService):
     def _start_worker(self):
         """Start the worker process."""
         try:
+            # Make sure to pass the current environment to the subprocess
+            import os
+            env = os.environ.copy()
+            
+            # Log which Python executable is being used
+            logger.info(f"Starting worker with Python: {sys.executable}")
+            
             self._process = subprocess.Popen(
                 [sys.executable, self._worker_script],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                bufsize=0
+                bufsize=0,
+                env=env
             )
             logger.info(f"Started Kokoro worker process: {self._process.pid}")
             return True
@@ -99,13 +107,17 @@ class KokoroTTSIsolated(TTSService):
 
             # Send command
             cmd_json = json.dumps(command) + '\n'
-            logger.debug(f"Sending command: {command}")
+            if command.get("cmd") == "generate":
+                logger.info(f"Sending TTS generation command for text: {command.get('text', '')[:50]}...")
+            else:
+                logger.debug(f"Sending command: {command}")
             self._process.stdin.write(cmd_json)
             self._process.stdin.flush()
 
-            # Read response with timeout
+            # Read response with timeout (longer for init to allow model download)
             import select
-            ready, _, _ = select.select([self._process.stdout], [], [], 10.0)  # 10 second timeout
+            timeout = 60.0 if command.get("cmd") == "init" else 10.0
+            ready, _, _ = select.select([self._process.stdout], [], [], timeout)
             
             if not ready:
                 return {"error": "Worker response timeout"}
@@ -121,7 +133,7 @@ class KokoroTTSIsolated(TTSService):
             response_data = json.loads(response_line.strip())
             # Don't log the full response if it contains audio data (too verbose)
             if "audio" in response_data:
-                logger.debug(f"Worker response: success with {len(response_data.get('audio', ''))} chars of audio data")
+                logger.info(f"Worker response: success with {len(response_data.get('audio', ''))} chars of base64 audio data")
             else:
                 logger.debug(f"Worker response: {response_line.strip()}")
             return response_data
@@ -170,7 +182,7 @@ class KokoroTTSIsolated(TTSService):
     @traced_tts
     async def run_tts(self, text: str) -> AsyncGenerator[Frame, None]:
         """Generate speech using isolated worker process."""
-        logger.debug(f"{self}: Generating TTS [{text}]")
+        logger.info(f"{self}: Starting TTS generation for text: [{text[:50]}...]")
 
         try:
             await self.start_ttfb_metrics()
@@ -196,11 +208,15 @@ class KokoroTTSIsolated(TTSService):
             # Decode audio
             audio_b64 = result["audio"]
             audio_bytes = base64.b64decode(audio_b64)
+            logger.info(f"Decoded {len(audio_bytes)} bytes of PCM audio from base64")
 
             await self.stop_ttfb_metrics()
 
             # Stream audio
             CHUNK_SIZE = self.chunk_size
+            total_chunks = (len(audio_bytes) + CHUNK_SIZE - 1) // CHUNK_SIZE
+            logger.info(f"Streaming audio in {total_chunks} chunks of {CHUNK_SIZE} bytes")
+            
             for i in range(0, len(audio_bytes), CHUNK_SIZE):
                 chunk = audio_bytes[i : i + CHUNK_SIZE]
                 if len(chunk) > 0:
@@ -211,7 +227,7 @@ class KokoroTTSIsolated(TTSService):
             logger.error(f"Error in run_tts: {e}")
             yield ErrorFrame(error=str(e))
         finally:
-            logger.debug(f"{self}: Finished TTS [{text}]")
+            logger.info(f"{self}: Finished TTS generation and streaming")
             await self.stop_ttfb_metrics()
             yield TTSStoppedFrame()
 

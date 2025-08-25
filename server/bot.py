@@ -34,9 +34,22 @@ from pipecat.processors.aggregators.llm_response import LLMUserAggregatorParams
 
 load_dotenv(override=True)
 
-app = FastAPI()
-
 pcs_map: Dict[str, SmallWebRTCConnection] = {}
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    yield  # Run app
+    logger.info("Shutting down, cleaning up connections...")
+    coros = [pc.disconnect() for pc in pcs_map.values()]
+    try:
+        await asyncio.gather(*coros, return_exceptions=True)
+    except Exception as e:
+        logger.warning(f"Error during connection cleanup: {e}")
+    finally:
+        pcs_map.clear()
+        logger.info("Cleanup completed")
+
+app = FastAPI(lifespan=lifespan)
 
 ice_servers = [
     IceServer(
@@ -46,7 +59,7 @@ ice_servers = [
 
 
 SYSTEM_INSTRUCTION = """
-"You are Pipecat, a friendly, helpful chatbot.
+"You are Pipecat, a cynical, angry chatbot.
 
 Your input is text transcribed in realtime from the user's voice. There may be transcription errors. Adjust your responses automatically to account for these errors.
 
@@ -59,6 +72,7 @@ Start the conversation by saying, "Hello, I'm Pipecat!" Then stop and wait for t
 
 
 async def run_bot(webrtc_connection):
+    logger.info("Starting bot with WebRTC connection")
     transport = SmallWebRTCTransport(
         webrtc_connection=webrtc_connection,
         params=TransportParams(
@@ -71,6 +85,7 @@ async def run_bot(webrtc_connection):
             ),
         ),
     )
+    logger.info(f"Audio settings - IN: True, OUT: True, Sample Rate: 24000")
 
     stt = WhisperSTTServiceMLX(model=MLXModel.LARGE_V3_TURBO_Q4)
 
@@ -80,10 +95,11 @@ async def run_bot(webrtc_connection):
 
     llm = OpenAILLMService(
         api_key="dummyKey",
-        model="google/gemma-3-12b",  # Medium-sized model. Uses ~8.5GB of RAM.
+        model="gemma-3-12b-it-qat",  # Medium-sized model. Uses ~8.5GB of RAM.
         # model="mlx-community/Qwen3-235B-A22B-Instruct-2507-3bit-DWQ", # Large model. Uses ~110GB of RAM!
         base_url="http://127.0.0.1:1234/v1",
         max_tokens=4096,
+        model_kwargs={"max_context": 131072},  # Increase context length to 128k tokens
     )
 
     context = OpenAILLMContext(
@@ -98,9 +114,8 @@ async def run_bot(webrtc_connection):
         context,
         # Whisper local service isn't streaming, so it delivers the full text all at
         # once, after the UserStoppedSpeaking frame. Set aggregation_timeout to a
-        # a de minimus value since we don't expect any transcript aggregation to be
-        # necessary.
-        user_params=LLMUserAggregatorParams(aggregation_timeout=0.05),
+        # slightly higher value to handle user interruptions more gracefully.
+        user_params=LLMUserAggregatorParams(aggregation_timeout=0.2),
     )
 
     #
@@ -120,6 +135,7 @@ async def run_bot(webrtc_connection):
             context_aggregator.assistant(),
         ]
     )
+    logger.info("Pipeline created with: Input -> STT -> RTVI -> Context -> LLM -> TTS -> Output")
 
     task = PipelineTask(
         pipeline,
@@ -132,22 +148,27 @@ async def run_bot(webrtc_connection):
 
     @rtvi.event_handler("on_client_ready")
     async def on_client_ready(rtvi):
+        logger.info("Client ready, starting conversation")
         await rtvi.set_bot_ready()
         # Kick off the conversation
         await task.queue_frames([context_aggregator.user().get_context_frame()])
 
     @transport.event_handler("on_first_participant_joined")
     async def on_first_participant_joined(transport, participant):
-        print(f"Participant joined: {participant}")
+        logger.info(f"Participant joined: {participant}")
         await transport.capture_participant_transcription(participant["id"])
 
     @transport.event_handler("on_participant_left")
     async def on_participant_left(transport, participant, reason):
-        print(f"Participant left: {participant}")
-        await task.cancel()
+        logger.info(f"Participant left: {participant} - Reason: {reason}")
+        try:
+            await task.cancel()
+        except Exception as e:
+            logger.warning(f"Error during task cancellation: {e}")
 
     runner = PipelineRunner(handle_sigint=False)
-
+    logger.info("Starting pipeline runner")
+    
     await runner.run(task)
 
 
@@ -180,14 +201,6 @@ async def offer(request: dict, background_tasks: BackgroundTasks):
     pcs_map[answer["pc_id"]] = pipecat_connection
 
     return answer
-
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    yield  # Run app
-    coros = [pc.disconnect() for pc in pcs_map.values()]
-    await asyncio.gather(*coros)
-    pcs_map.clear()
 
 
 if __name__ == "__main__":
