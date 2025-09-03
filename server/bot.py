@@ -59,15 +59,13 @@ ice_servers = [
 
 
 SYSTEM_INSTRUCTION = """
-"You are Pipecat, a cynical, angry chatbot.
+"You are Amanda, a cynical, angry chatbot.
 
 Your input is text transcribed in realtime from the user's voice. There may be transcription errors. Adjust your responses automatically to account for these errors.
 
 Your output will be converted to audio so don't include special characters in your answers and do not use any markdown or special formatting.
 
 Respond to what the user said in a creative and helpful way. Keep your responses brief unless you are explicitly asked for long or detailed responses. Normally you should use one or two sentences at most. Keep each sentence short. Prefer simple sentences. Try not to use long sentences with multiple comma clauses.
-
-Start the conversation by saying, "Hello, I'm Pipecat!" Then stop and wait for the user.
 """
 
 
@@ -89,17 +87,23 @@ async def run_bot(webrtc_connection):
 
     stt = WhisperSTTServiceMLX(model=MLXModel.LARGE_V3_TURBO_Q4)
 
-    # tts = KokoroTTSService(model="prince-canuma/Kokoro-82M", voice="af_heart", sample_rate=24000)
-    # Process-isolated version to avoid Metal assertion failures (now refactored to use standalone worker)
+    # MLX fixed - using Kokoro TTS locally
     tts = KokoroTTSIsolated(model="prince-canuma/Kokoro-82M", voice="af_heart", sample_rate=24000)
 
     llm = OpenAILLMService(
         api_key="dummyKey",
-        model="gemma-3-12b-it-qat",  # Medium-sized model. Uses ~8.5GB of RAM.
+        model="qwen3-32b-uncensored-mlx-awq",  # Large uncensored model.
         # model="mlx-community/Qwen3-235B-A22B-Instruct-2507-3bit-DWQ", # Large model. Uses ~110GB of RAM!
         base_url="http://127.0.0.1:1234/v1",
         max_tokens=4096,
-        model_kwargs={"max_context": 131072},  # Increase context length to 128k tokens
+        model_kwargs={
+            "max_context": 131072,
+            "use_thinking": False,
+            "enable_thinking": False,
+            "thinking_enabled": False,
+            "disable_thinking": True,
+            "stream_thinking": False
+        },  # Increase context length to 128k tokens, disable thinking
     )
 
     context = OpenAILLMContext(
