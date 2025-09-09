@@ -22,8 +22,9 @@ from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
 from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContext
 from pipecat.services.openai.llm import OpenAILLMService
-# from kokoro_tts import KokoroTTSService
-from kokoro_tts_isolated import KokoroTTSIsolated
+from kokoro_tts import KokoroTTSService
+# from kokoro_tts_isolated import KokoroTTSIsolated
+# from pipecat.services.openai.tts import OpenAITTSService
 from pipecat.services.whisper.stt import WhisperSTTServiceMLX, MLXModel
 from pipecat.transports.base_transport import TransportParams
 from pipecat.processors.frameworks.rtvi import RTVIConfig, RTVIObserver, RTVIProcessor
@@ -88,22 +89,25 @@ async def run_bot(webrtc_connection):
     stt = WhisperSTTServiceMLX(model=MLXModel.LARGE_V3_TURBO_Q4)
 
     # MLX fixed - using Kokoro TTS locally
-    tts = KokoroTTSIsolated(model="prince-canuma/Kokoro-82M", voice="af_heart", sample_rate=24000)
+    tts = KokoroTTSService(model="prince-canuma/Kokoro-82M", voice="af_heart", sample_rate=24000)
 
     llm = OpenAILLMService(
         api_key="dummyKey",
-        model="qwen3-32b-uncensored-mlx-awq",  # Large uncensored model.
+        model="gemma-3-12B-it-QAT-Q4_0",  # Updated to requested model
         # model="mlx-community/Qwen3-235B-A22B-Instruct-2507-3bit-DWQ", # Large model. Uses ~110GB of RAM!
         base_url="http://127.0.0.1:1234/v1",
         max_tokens=4096,
         model_kwargs={
-            "max_context": 131072,
-            "use_thinking": False,
-            "enable_thinking": False,
-            "thinking_enabled": False,
-            "disable_thinking": True,
-            "stream_thinking": False
-        },  # Increase context length to 128k tokens, disable thinking
+            "max_tokens": 4096,
+            "temperature": 0.7,
+            "stream": True,
+            "stop": None,
+            "extra_body": {
+                "thinking": False,
+                "thinking_enabled": False,
+                "use_thinking": False
+            }
+        },  # Disable thinking via extra_body parameters
     )
 
     context = OpenAILLMContext(
